@@ -6,8 +6,33 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
   const [mealName, setMealName] = useState('');
   const [effort, setEffort] = useState('Medium');
   const [selectedTag, setSelectedTag] = useState('Comfort');
+  const [isExisting, setIsExisting] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
+
+  function handleInputChange(value) {
+    setMealName(value);
+    
+    // Check if the typed value matches any existing catalog item
+    const matched = allMeals.find(
+      (m) => m.name.toLowerCase() === value.trim().toLowerCase()
+    );
+
+    if (matched) {
+      setEffort(matched.effort || 'Medium');
+      setSelectedTag(matched.tags?.[0] || 'Comfort');
+      setIsExisting(true);
+    } else {
+      setIsExisting(false);
+    }
+  }
+
+  function handleSelectExisting(meal) {
+    setMealName(meal.name);
+    setEffort(meal.effort || 'Medium');
+    setSelectedTag(meal.tags?.[0] || 'Comfort');
+    setIsExisting(true);
+  }
 
   async function handleSubmitSuggestion(e) {
     e.preventDefault();
@@ -59,6 +84,7 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
 
       setMessage(`🎉 "${cleanName}" added to tonight's suggestions!`);
       setMealName('');
+      setIsExisting(false);
 
       if (onSuggestionAdded && targetMeal) {
         onSuggestionAdded(targetMeal);
@@ -83,15 +109,19 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
 
       <form onSubmit={handleSubmitSuggestion} style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         <div>
-          <label className="auth-label">Dish Name</label>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <label className="auth-label">Dish Name</label>
+            {isExisting && (
+              <span style={{ fontSize: '11px', color: '#0369a1', fontWeight: '700' }}>
+                🔒 Locked to catalog settings
+              </span>
+            )}
+          </div>
           <MealAutocomplete
             allMeals={allMeals}
             value={mealName}
-            onChange={setMealName}
-            onSelectExisting={(meal) => {
-              setEffort(meal.effort);
-              if (meal.tags?.[0]) setSelectedTag(meal.tags[0]);
-            }}
+            onChange={handleInputChange}
+            onSelectExisting={handleSelectExisting}
             placeholder="e.g. Dosa, Rajma Chawal, Pasta..."
           />
         </div>
@@ -101,8 +131,14 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
             <label className="auth-label">Effort Level</label>
             <select
               className="auth-select"
-              style={{ width: '100%' }}
+              style={{
+                width: '100%',
+                backgroundColor: isExisting ? '#f1f5f9' : '#ffffff',
+                cursor: isExisting ? 'not-allowed' : 'pointer',
+                opacity: isExisting ? 0.75 : 1,
+              }}
               value={effort}
+              disabled={isExisting}
               onChange={(e) => setEffort(e.target.value)}
             >
               <option value="Low">⚡ Low (Quick)</option>
@@ -115,8 +151,14 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
             <label className="auth-label">Category Tag</label>
             <select
               className="auth-select"
-              style={{ width: '100%' }}
+              style={{
+                width: '100%',
+                backgroundColor: isExisting ? '#f1f5f9' : '#ffffff',
+                cursor: isExisting ? 'not-allowed' : 'pointer',
+                opacity: isExisting ? 0.75 : 1,
+              }}
               value={selectedTag}
+              disabled={isExisting}
               onChange={(e) => setSelectedTag(e.target.value)}
             >
               <option value="Comfort">Comfort</option>

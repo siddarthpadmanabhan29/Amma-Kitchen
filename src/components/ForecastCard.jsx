@@ -65,10 +65,15 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
   }, []);
 
   async function fetchSuggestions() {
+    // Start of the current day in local time converted to ISO
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
     const { data } = await supabase
       .from('meals')
       .select('*, profiles:submitted_by(name, avatar_emoji)')
       .eq('status', 'suggested')
+      .gte('created_at', startOfDay.toISOString())
       .order('created_at', { ascending: false });
 
     if (data) {
