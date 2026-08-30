@@ -10,6 +10,7 @@ export default function App() {
   const [userProfile, setUserProfile] = useState(null);
   const [allMeals, setAllMeals] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [latestSuggestion, setLatestSuggestion] = useState(null);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -115,20 +116,27 @@ export default function App() {
 
       {/* Main 2-Column Responsive Grid */}
       <main className="dashboard-main">
-        {/* Left Column: Dinner Forecast & Voting */}
+        {/* Left Column: Dinner Forecast, Live Voting, & Family Suggestions */}
         <section>
           <ForecastCard
             userProfile={userProfile}
+            newSuggestion={latestSuggestion}
             onCatalogUpdate={(newMeal) => setAllMeals((prev) => [...prev, newMeal])}
           />
         </section>
 
-        {/* Right Column: Meal Suggestion Box & Amma's Queue */}
+        {/* Right Column: Instant Suggestion Box */}
         <section>
           <MealSuggestions
             userProfile={userProfile}
             allMeals={allMeals}
-            onMealApproved={(newMeal) => setAllMeals((prev) => [...prev, newMeal])}
+            onSuggestionAdded={(newMeal) => {
+              setLatestSuggestion(newMeal);
+              setAllMeals((prev) => {
+                const exists = prev.some((m) => m.id === newMeal.id);
+                return exists ? prev : [...prev, newMeal];
+              });
+            }}
           />
         </section>
       </main>

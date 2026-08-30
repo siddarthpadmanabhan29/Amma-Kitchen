@@ -3,8 +3,9 @@ import { supabase } from '../lib/supabase';
 import MealAutocomplete from './MealAutocomplete';
 import './ForecastCard.css';
 
-export default function ForecastCard({ userProfile, onCatalogUpdate }) {
+export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggestion }) {
   const [candidates, setCandidates] = useState([]);
+  const [suggestedMeals, setSuggestedMeals] = useState([]);
   const [allApprovedMeals, setAllApprovedMeals] = useState([]);
   const [votes, setVotes] = useState([]);
   const [session, setSession] = useState(null);
@@ -18,11 +19,24 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
 
   const todayStr = new Date().toISOString().split('T')[0];
 
+  // 1. Instant local sync whenever a suggestion is added in this browser
+  useEffect(() => {
+    if (newSuggestion && newSuggestion.id) {
+      setSuggestedMeals((prev) => {
+        const exists = prev.some((m) => m.id === newSuggestion.id);
+        if (exists) return prev;
+        return [newSuggestion, ...prev];
+      });
+    }
+  }, [newSuggestion]);
+
+  // 2. Realtime listener for cross-device voting and new suggestions
   useEffect(() => {
     loadDailySession();
 
-    const channel = supabase
-      .channel('session_votes_changes')
+    // Listen to real-time vote changes
+    const voteChannel = supabase
+      .channel('session_votes_realtime')
       .on(
         'postgres_changes',
         { event: '*', schema: 'public', table: 'session_votes' },
@@ -32,10 +46,53 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
       )
       .subscribe();
 
+    // Listen to real-time meal changes (new suggestions or updates from other devices)
+    const mealChannel = supabase
+      .channel('suggested_meals_realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'meals' },
+        () => {
+          fetchSuggestions();
+        }
+      )
+      .subscribe();
+
     return () => {
-      supabase.removeChannel(channel);
+      supabase.removeChannel(voteChannel);
+      supabase.removeChannel(mealChannel);
     };
   }, []);
+
+  async function fetchSuggestions() {
+    const { data } = await supabase
+      .from('meals')
+      .select('*, profiles:submitted_by(name, avatar_emoji)')
+      .eq('status', 'suggested')
+      .order('created_at', { ascending: false });
+
+    if (data) {
+      setSuggestedMeals(data);
+    }
+  }
+
+  async function fetchVotes() {
+    const { data: voteData } = await supabase
+      .from('session_votes')
+      .select(`
+        id,
+        meal_id,
+        user_id,
+        vote_type,
+        profiles (
+          name,
+          avatar_emoji
+        )
+      `)
+      .eq('session_date', todayStr);
+
+    if (voteData) setVotes(voteData);
+  }
 
   async function loadDailySession() {
     setLoading(true);
@@ -55,7 +112,7 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
 
       setAllApprovedMeals(allMeals || []);
 
-      // 3. Fetch past 5 days of history for the Anti-Repeat Recency Penalty
+      // 3. Fetch past 5 days of history for Anti-Repeat Recency Penalty
       const fiveDaysAgo = new Date();
       fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
       const fiveDaysAgoStr = fiveDaysAgo.toISOString().split('T')[0];
@@ -76,12 +133,10 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
         const scored = allMeals.map((m) => {
           let score = 50;
 
-          // Recency Anti-Repeat Penalty (-60 pts if cooked in the last 5 days)
           if (recentMealIds.has(m.id)) {
             score -= 60;
           }
 
-          // Time of day heuristics
           if (currentHour >= 19.5) {
             if (m.effort === 'High') score -= 35;
             if (m.effort === 'Low') score += 20;
@@ -89,7 +144,6 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
             if (m.effort === 'High') score += 15;
           }
 
-          // Weekend boost
           if ((currentDay === 5 || currentDay === 6) && m.tags?.includes('Fun Weekend')) {
             score += 25;
           }
@@ -115,7 +169,7 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
 
       setSession(currentSession);
 
-      // Hydrate candidate list (including final_meal if custom added)
+      // Hydrate Top 3 Candidates
       if (currentSession) {
         const idsToFetch = [
           ...currentSession.candidate_meal_ids,
@@ -128,30 +182,14 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
         setCandidates(candidateList);
       }
 
+      // Fetch suggested meals and votes
+      await fetchSuggestions();
       await fetchVotes();
     } catch (err) {
       console.error('Session loading error:', err);
     } finally {
       setLoading(false);
     }
-  }
-
-  async function fetchVotes() {
-    const { data: voteData } = await supabase
-      .from('session_votes')
-      .select(`
-        id,
-        meal_id,
-        user_id,
-        vote_type,
-        profiles (
-          name,
-          avatar_emoji
-        )
-      `)
-      .eq('session_date', todayStr);
-
-    if (voteData) setVotes(voteData);
   }
 
   async function handleVote(mealId, voteType) {
@@ -177,7 +215,6 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
     await fetchVotes();
   }
 
-  // Finalize Dinner and Record to History for Recency Memory
   async function handleLockIn(mealId) {
     const { error } = await supabase
       .from('dinner_sessions')
@@ -198,6 +235,9 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
         { onConflict: 'session_date' }
       );
 
+      // If a suggested meal is locked in, mark it approved for the permanent catalog
+      await supabase.from('meals').update({ status: 'approved' }).eq('id', mealId);
+
       setSession((prev) => ({
         ...prev,
         status: 'locked_in',
@@ -206,7 +246,6 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
     }
   }
 
-  // Amma Custom Override Submission
   async function handleCustomMealLockIn(e) {
     e.preventDefault();
     if (!customMealName.trim()) return;
@@ -274,7 +313,122 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
 
   const isAmma = userProfile?.role === 'admin';
   const isLocked = session?.status === 'locked_in';
-  const winningMeal = candidates.find((m) => m.id === session?.final_meal_id);
+  const allCurrentOptions = [...candidates, ...suggestedMeals];
+  const winningMeal = allCurrentOptions.find((m) => m.id === session?.final_meal_id);
+
+  const renderMealCard = (meal, isSuggested = false) => {
+    const upvoters = votes.filter(
+      (v) => v.meal_id === meal.id && v.vote_type === 'upvote'
+    );
+    const downvoters = votes.filter(
+      (v) => v.meal_id === meal.id && v.vote_type === 'downvote'
+    );
+    const score = upvoters.length - downvoters.length;
+
+    const userVote = votes.find(
+      (v) => v.meal_id === meal.id && v.user_id === userProfile?.id
+    );
+
+    const isWinning = session?.final_meal_id === meal.id;
+
+    return (
+      <div
+        key={meal.id}
+        className={`meal-option-card ${isWinning ? 'winning-meal' : ''}`}
+      >
+        <div className="meal-header">
+          <span className="meal-name">
+            {isWinning ? '👑 ' : ''}
+            {meal.name}
+          </span>
+          <span
+            className={`vote-tally ${
+              score > 0 ? 'positive' : score < 0 ? 'negative' : ''
+            }`}
+          >
+            {score > 0 ? `+${score}` : score} votes
+          </span>
+        </div>
+
+        {/* Submitter Attribution */}
+        {isSuggested && (
+          <div style={{ fontSize: '12px', color: '#0369a1', fontWeight: '700', marginBottom: '6px' }}>
+            💡 Suggested by {meal.profiles?.avatar_emoji || '👤'} {meal.profiles?.name || 'Family Member'}
+          </div>
+        )}
+
+        <div className="meal-meta">
+          <span className="tag-badge">⚡ {meal.effort} Effort</span>
+          {meal.tags?.map((t, idx) => (
+            <span key={idx} className="tag-badge">
+              {t}
+            </span>
+          ))}
+        </div>
+
+        {!isLocked && (
+          <div className="actions-row">
+            <button
+              type="button"
+              className={`vote-btn ${
+                userVote?.vote_type === 'upvote' ? 'active-up' : ''
+              }`}
+              onClick={() => handleVote(meal.id, 'upvote')}
+            >
+              👍 {upvoters.length}
+            </button>
+            <button
+              type="button"
+              className={`vote-btn ${
+                userVote?.vote_type === 'downvote' ? 'active-down' : ''
+              }`}
+              onClick={() => handleVote(meal.id, 'downvote')}
+            >
+              👎 {downvoters.length}
+            </button>
+
+            {isAmma && (
+              <button
+                type="button"
+                className="lockin-btn"
+                style={{ flex: 1.5 }}
+                onClick={() => handleLockIn(meal.id)}
+              >
+                Lock In 🔒
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Voter Breakdown Chips */}
+        {(upvoters.length > 0 || downvoters.length > 0) && (
+          <div className="voters-breakdown">
+            {upvoters.length > 0 && (
+              <div className="voter-pill upvote-pill">
+                <span>👍</span>
+                {upvoters.map((v) => (
+                  <span key={v.id} className="voter-name" title={v.profiles?.name}>
+                    {v.profiles?.avatar_emoji} {v.profiles?.name}
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {downvoters.length > 0 && (
+              <div className="voter-pill downvote-pill">
+                <span>👎</span>
+                {downvoters.map((v) => (
+                  <span key={v.id} className="voter-name" title={v.profiles?.name}>
+                    {v.profiles?.avatar_emoji} {v.profiles?.name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="session-card">
@@ -294,117 +448,30 @@ export default function ForecastCard({ userProfile, onCatalogUpdate }) {
         </div>
       )}
 
-      {/* Candidate Meals List */}
+      {/* 1. Daily Algorithmic Top 3 Candidates */}
       <div className="candidates-list">
-        {candidates.map((meal) => {
-          const upvoters = votes.filter(
-            (v) => v.meal_id === meal.id && v.vote_type === 'upvote'
-          );
-          const downvoters = votes.filter(
-            (v) => v.meal_id === meal.id && v.vote_type === 'downvote'
-          );
-          const score = upvoters.length - downvoters.length;
-
-          const userVote = votes.find(
-            (v) => v.meal_id === meal.id && v.user_id === userProfile?.id
-          );
-
-          const isWinning = session?.final_meal_id === meal.id;
-
-          return (
-            <div
-              key={meal.id}
-              className={`meal-option-card ${isWinning ? 'winning-meal' : ''}`}
-            >
-              <div className="meal-header">
-                <span className="meal-name">
-                  {isWinning ? '👑 ' : ''}
-                  {meal.name}
-                </span>
-                <span
-                  className={`vote-tally ${
-                    score > 0 ? 'positive' : score < 0 ? 'negative' : ''
-                  }`}
-                >
-                  {score > 0 ? `+${score}` : score} votes
-                </span>
-              </div>
-
-              <div className="meal-meta">
-                <span className="tag-badge">⚡ {meal.effort} Effort</span>
-                {meal.tags?.map((t, idx) => (
-                  <span key={idx} className="tag-badge">
-                    {t}
-                  </span>
-                ))}
-              </div>
-
-              {!isLocked && (
-                <div className="actions-row">
-                  <button
-                    type="button"
-                    className={`vote-btn ${
-                      userVote?.vote_type === 'upvote' ? 'active-up' : ''
-                    }`}
-                    onClick={() => handleVote(meal.id, 'upvote')}
-                  >
-                    👍 {upvoters.length}
-                  </button>
-                  <button
-                    type="button"
-                    className={`vote-btn ${
-                      userVote?.vote_type === 'downvote' ? 'active-down' : ''
-                    }`}
-                    onClick={() => handleVote(meal.id, 'downvote')}
-                  >
-                    👎 {downvoters.length}
-                  </button>
-
-                  {isAmma && (
-                    <button
-                      type="button"
-                      className="lockin-btn"
-                      style={{ flex: 1.5 }}
-                      onClick={() => handleLockIn(meal.id)}
-                    >
-                      Lock In 🔒
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Voter Avatar Chips */}
-              {(upvoters.length > 0 || downvoters.length > 0) && (
-                <div className="voters-breakdown">
-                  {upvoters.length > 0 && (
-                    <div className="voter-pill upvote-pill">
-                      <span>👍</span>
-                      {upvoters.map((v) => (
-                        <span key={v.id} className="voter-name" title={v.profiles?.name}>
-                          {v.profiles?.avatar_emoji} {v.profiles?.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-
-                  {downvoters.length > 0 && (
-                    <div className="voter-pill downvote-pill">
-                      <span>👎</span>
-                      {downvoters.map((v) => (
-                        <span key={v.id} className="voter-name" title={v.profiles?.name}>
-                          {v.profiles?.avatar_emoji} {v.profiles?.name}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {candidates.map((meal) => renderMealCard(meal, false))}
       </div>
 
-      {/* Amma's Custom Override Input */}
+      {/* 2. Real-Time Family Suggestions Section */}
+      {suggestedMeals.length > 0 && (
+        <div style={{ marginTop: '20px', borderTop: '2px dashed #cbd5e1', paddingTop: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
+            <span style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+              💡 Family Suggestions ({suggestedMeals.length})
+            </span>
+            <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: '12px', fontWeight: '700' }}>
+              Active for Voting
+            </span>
+          </div>
+
+          <div className="candidates-list">
+            {suggestedMeals.map((meal) => renderMealCard(meal, true))}
+          </div>
+        </div>
+      )}
+
+      {/* 3. Amma's Custom Override Input */}
       {isAmma && !isLocked && (
         <div className="custom-override-container">
           {!showCustomInput ? (
