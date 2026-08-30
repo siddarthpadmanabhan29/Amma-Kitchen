@@ -1,0 +1,116 @@
+.auth-card {
+  background: #ffffff;
+  border-radius: 20px;
+  padding: 36px 28px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+  text-align: center;
+  border: 1px solid #e2e8f0;
+}
+
+.badge {
+  display: inline-block;
+  background: #fef3c7;
+  color: #92400e;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 6px 14px;
+  border-radius: 20px;
+  margin-bottom: 16px;
+}
+
+.auth-title {
+  color: #0f172a;
+  font-size: 24px;
+  margin-bottom: 20px;
+  font-weight: 800;
+}
+
+.auth-form {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  gap: 12px;
+}
+
+.auth-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #475569;
+}
+
+.auth-input,
+.auth-select {
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #cbd5e1;
+  font-size: 15px;
+  outline: none;
+  background: #ffffff;
+  transition: border-color 0.2s;
+}
+
+.auth-input:focus,
+.auth-select:focus {
+  border-color: #2563eb;
+}
+
+.emoji-row {
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.emoji-btn {
+  font-size: 20px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+  transition: all 0.15s ease;
+}
+
+.emoji-btn.selected {
+  border: 2px solid #2563eb;
+  background: #eff6ff;
+}
+
+.auth-submit-btn {
+  background: #2563eb;
+  color: #ffffff;
+  border: none;
+  padding: 14px;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  margin-top: 12px;
+  transition: background 0.2s;
+}
+
+.auth-submit-btn:hover {
+  background: #1d4ed8;
+}
+
+.auth-submit-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.auth-switch-btn {
+  background: none;
+  border: none;
+  color: #2563eb;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 16px;
+}
+
+.auth-error-msg {
+  font-size: 14px;
+  color: #dc2626;
+  margin-top: 12px;
+}
