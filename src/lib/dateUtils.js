@@ -15,32 +15,23 @@ export function getEasternDateStr(date = new Date()) {
 }
 
 /**
- * Returns the exact UTC ISO string for midnight Eastern Time,
- * automatically calculating EST (-5) vs EDT (-4) offset.
+ * Returns the exact ISO string for midnight Eastern Time with explicit timezone offset.
+ * Example for August 30 EDT: "2026-08-30T00:00:00.000-04:00"
  */
 export function getEasternStartOfDayISO(date = new Date()) {
   const dateStr = getEasternDateStr(date);
-  const [year, month, day] = dateStr.split('-').map(Number);
-  
-  // Start with local midnight representation
-  const target = new Date(year, month - 1, day, 0, 0, 0);
-  
-  // Format target into Eastern to determine exact UTC offset dynamically
-  const formatter = new Intl.DateTimeFormat('en-US', {
+
+  // Determine whether Eastern Time is currently EDT (-04:00) or EST (-05:00)
+  const isEDT = new Intl.DateTimeFormat('en-US', {
     timeZone: EASTERN_TZ,
-    timeZoneName: 'shortOffset',
-  });
-  
-  const parts = formatter.formatToParts(target);
-  const offsetPart = parts.find((p) => p.type === 'timeZoneName')?.value || 'GMT-4';
-  
-  // Parses "GMT-4" or "GMT-5"
-  const offsetMatch = offsetPart.match(/([+-]\d+)/);
-  const offsetHours = offsetMatch ? parseInt(offsetMatch[1], 10) : -4;
-  
-  // Compute UTC timestamp of Eastern midnight
-  const utcMidnight = new Date(Date.UTC(year, month - 1, day, -offsetHours, 0, 0));
-  return utcMidnight.toISOString();
+    timeZoneName: 'short',
+  })
+    .format(date)
+    .includes('EDT');
+
+  const offset = isEDT ? '-04:00' : '-05:00';
+
+  return `${dateStr}T00:00:00.000${offset}`;
 }
 
 /**
