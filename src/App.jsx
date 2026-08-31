@@ -80,11 +80,13 @@ export default function App() {
     );
   }
 
-  const todayFormatted = new Date().toLocaleDateString('en-US', {
+  // Strictly formatted to Ohio / US Eastern Time
+  const todayFormatted = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
     weekday: 'long',
     month: 'short',
     day: 'numeric',
-  });
+  }).format(new Date());
 
   return (
     <div className="dashboard-wrapper">

@@ -7,13 +7,13 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
   const [effort, setEffort] = useState('Medium');
   const [selectedTag, setSelectedTag] = useState('Comfort');
   const [isExisting, setIsExisting] = useState(false);
+  const [selectedExistingMeal, setSelectedExistingMeal] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState('');
 
   function handleInputChange(value) {
     setMealName(value);
-    
-    // Check if the typed value matches any existing catalog item
+
     const matched = allMeals.find(
       (m) => m.name.toLowerCase() === value.trim().toLowerCase()
     );
@@ -22,8 +22,10 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
       setEffort(matched.effort || 'Medium');
       setSelectedTag(matched.tags?.[0] || 'Comfort');
       setIsExisting(true);
+      setSelectedExistingMeal(matched);
     } else {
       setIsExisting(false);
+      setSelectedExistingMeal(null);
     }
   }
 
@@ -32,6 +34,7 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
     setEffort(meal.effort || 'Medium');
     setSelectedTag(meal.tags?.[0] || 'Comfort');
     setIsExisting(true);
+    setSelectedExistingMeal(meal);
   }
 
   async function handleSubmitSuggestion(e) {
@@ -42,23 +45,33 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
 
     try {
       const cleanName = mealName.trim();
-      const existing = allMeals.find(
-        (m) => m.name.toLowerCase() === cleanName.toLowerCase()
-      );
-
       let targetMeal = null;
 
-      if (existing) {
+      if (selectedExistingMeal) {
+        // 1. If suggesting a catalog staple, insert a lightweight suggested record for today
+        const { data: suggestedCopy, error: copyErr } = await supabase
+          .from('meals')
+          .insert({
+            name: selectedExistingMeal.name,
+            effort: selectedExistingMeal.effort,
+            tags: selectedExistingMeal.tags || ['Comfort'],
+            status: 'suggested',
+            submitted_by: userProfile.id,
+          })
+          .select()
+          .single();
+
+        if (copyErr) throw copyErr;
+
         targetMeal = {
-          ...existing,
-          status: 'suggested',
-          submitted_by: userProfile.id,
+          ...suggestedCopy,
           profiles: {
             name: userProfile.name,
             avatar_emoji: userProfile.avatar_emoji,
           },
         };
       } else {
+        // 2. If suggesting a brand new dish, insert new meal
         const { data: newMeal, error: insertErr } = await supabase
           .from('meals')
           .insert({
@@ -85,6 +98,7 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
       setMessage(`🎉 "${cleanName}" added to tonight's suggestions!`);
       setMealName('');
       setIsExisting(false);
+      setSelectedExistingMeal(null);
 
       if (onSuggestionAdded && targetMeal) {
         onSuggestionAdded(targetMeal);
@@ -113,7 +127,7 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
             <label className="auth-label">Dish Name</label>
             {isExisting && (
               <span style={{ fontSize: '11px', color: '#0369a1', fontWeight: '700' }}>
-                🔒 Locked to catalog settings
+                🔒 Existing Catalog Meal
               </span>
             )}
           </div>
@@ -122,7 +136,7 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
             value={mealName}
             onChange={handleInputChange}
             onSelectExisting={handleSelectExisting}
-            placeholder="e.g. Dosa, Rajma Chawal, Pasta..."
+            placeholder="e.g. Ven Pongal, Dosa, Rajma Chawal..."
           />
         </div>
 
@@ -161,9 +175,13 @@ export default function MealSuggestions({ userProfile, allMeals = [], onSuggesti
               disabled={isExisting}
               onChange={(e) => setSelectedTag(e.target.value)}
             >
+              <option value="South Indian">South Indian</option>
+              <option value="Tiffin">Tiffin</option>
               <option value="Comfort">Comfort</option>
               <option value="Quick">Quick</option>
               <option value="Light Meal">Light Meal</option>
+              <option value="Festival">Festival</option>
+              <option value="North Indian">North Indian</option>
               <option value="Fun Weekend">Fun Weekend</option>
               <option value="Batch Cook">Batch Cook</option>
               <option value="Takeout">Takeout</option>
