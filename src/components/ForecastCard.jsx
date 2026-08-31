@@ -81,17 +81,71 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       const { data: allMeals } = await supabase.from('meals').select('*').eq('status', 'approved');
       setAllApprovedMeals(allMeals || []);
 
+      // 1. Fetch 5-day history + yesterday's meal name for Cluster Fatigue
       const fiveDaysAgo = new Date();
       fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
+      const fiveDaysAgoStr = getEasternDateStr(fiveDaysAgo);
+
+      const yesterday = new Date();
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = getEasternDateStr(yesterday);
+
       const { data: history } = await supabase
         .from('dinner_history')
-        .select('meal_id')
-        .gte('session_date', getEasternDateStr(fiveDaysAgo));
+        .select('meal_id, session_date, meals(name)')
+        .gte('session_date', fiveDaysAgoStr);
 
       const recentMealIds = new Set((history || []).map((h) => h.meal_id));
+      const yesterdayEntry = (history || []).find((h) => h.session_date === yesterdayStr);
+      const yesterdayMeal = yesterdayEntry?.meals || null;
 
+      // 2. Fetch 14-day history for Adaptive Learning (Rejection Penalty & Win-Rate Boost)
+      const fourteenDaysAgo = new Date();
+      fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
+      const fourteenDaysAgoStr = getEasternDateStr(fourteenDaysAgo);
+
+      const { data: pastSessions } = await supabase
+        .from('dinner_sessions')
+        .select('candidate_meal_ids, final_meal_id')
+        .gte('session_date', fourteenDaysAgoStr)
+        .neq('session_date', todayStr);
+
+      const { data: pastVotes } = await supabase
+        .from('session_votes')
+        .select('meal_id, vote_type')
+        .gte('session_date', fourteenDaysAgoStr)
+        .neq('session_date', todayStr);
+
+      const performanceStats = {};
+
+      (pastSessions || []).forEach((s) => {
+        (s.candidate_meal_ids || []).forEach((id) => {
+          if (!performanceStats[id]) {
+            performanceStats[id] = { appearances: 0, upvotes: 0, wins: 0 };
+          }
+          performanceStats[id].appearances += 1;
+          if (s.final_meal_id === id) {
+            performanceStats[id].wins += 1;
+          }
+        });
+      });
+
+      (pastVotes || []).forEach((v) => {
+        if (v.vote_type === 'up' && performanceStats[v.meal_id]) {
+          performanceStats[v.meal_id].upvotes += 1;
+        }
+      });
+
+      // 3. Rank candidates if session is not yet generated for today
       if (!currentSession && allMeals?.length > 0) {
-        const top3Ids = rankCandidateMeals({ allMeals, recentMealIds, specialEvent: event });
+        const top3Ids = rankCandidateMeals({
+          allMeals,
+          recentMealIds,
+          yesterdayMeal,
+          specialEvent: event,
+          performanceStats,
+        });
+
         const { data: newSession } = await supabase
           .from('dinner_sessions')
           .insert({ session_date: todayStr, candidate_meal_ids: top3Ids, status: 'voting_open' })
@@ -138,7 +192,9 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       .eq('session_date', todayStr);
 
     if (!error) {
-      await supabase.from('dinner_history').upsert({ session_date: todayStr, meal_id: mealId, locked_by: userProfile.id }, { onConflict: 'session_date' });
+      await supabase
+        .from('dinner_history')
+        .upsert({ session_date: todayStr, meal_id: mealId, locked_by: userProfile.id }, { onConflict: 'session_date' });
       await supabase.from('meals').update({ status: 'approved' }).eq('id', mealId);
       setSession((prev) => ({ ...prev, status: 'locked_in', final_meal_id: mealId }));
     }
@@ -185,7 +241,19 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
         <div style={{ textAlign: 'center', marginBottom: '16px' }}>
           <span className="badge">🗳️ Today's Forecast & Voting</span>
           {currentEvent && (
-            <div style={{ margin: '8px auto 10px', padding: '6px 14px', background: '#fef3c7', border: '1px solid #fde68a', borderRadius: '8px', color: '#92400e', fontSize: '13px', fontWeight: '700', display: 'inline-block' }}>
+            <div
+              style={{
+                margin: '8px auto 10px',
+                padding: '6px 14px',
+                background: '#fef3c7',
+                border: '1px solid #fde68a',
+                borderRadius: '8px',
+                color: '#92400e',
+                fontSize: '13px',
+                fontWeight: '700',
+                display: 'inline-block',
+              }}
+            >
               🪔 {currentEvent.name}: {currentEvent.description}
             </div>
           )}
@@ -212,8 +280,19 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       {suggestedMeals.length > 0 && (
         <div style={{ marginTop: '20px', borderTop: '2px dashed #cbd5e1', paddingTop: '16px' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
-            <span style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>💡 Family Suggestions ({suggestedMeals.length})</span>
-            <span style={{ fontSize: '11px', background: '#e0f2fe', color: '#0369a1', padding: '2px 8px', borderRadius: '12px', fontWeight: '700' }}>
+            <span style={{ fontSize: '15px', fontWeight: '800', color: '#0f172a' }}>
+              💡 Family Suggestions ({suggestedMeals.length})
+            </span>
+            <span
+              style={{
+                fontSize: '11px',
+                background: '#e0f2fe',
+                color: '#0369a1',
+                padding: '2px 8px',
+                borderRadius: '12px',
+                fontWeight: '700',
+              }}
+            >
               {isLocked ? 'Voting Closed' : 'Active for Voting'}
             </span>
           </div>
@@ -242,7 +321,9 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       )}
 
       {isAmma && isLocked && (
-        <button className="unlock-btn" onClick={handleUnlock}>🔓 Change Choice / Reopen Voting</button>
+        <button className="unlock-btn" onClick={handleUnlock}>
+          🔓 Change Choice / Reopen Voting
+        </button>
       )}
     </div>
   );
