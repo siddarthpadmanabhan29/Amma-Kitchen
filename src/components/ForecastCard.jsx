@@ -19,7 +19,8 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
 
   const todayStr = getEasternDateStr();
   const isAmma = userProfile?.role === 'admin';
-  const isLocked = session?.status === 'locked_in';
+  const lockedMealIds = session?.final_meal_ids || (session?.final_meal_id ? [session.final_meal_id] : []);
+  const isLocked = session?.status === 'locked_in' && lockedMealIds.length > 0;
 
   useEffect(() => {
     if (newSuggestion?.id) {
@@ -81,7 +82,7 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       const { data: allMeals } = await supabase.from('meals').select('*').eq('status', 'approved');
       setAllApprovedMeals(allMeals || []);
 
-      // 1. Fetch 5-day history + yesterday's meal name for Cluster Fatigue
+      // 1. Fetch 5-day history for Recency & Multi-Cluster Fatigue
       const fiveDaysAgo = new Date();
       fiveDaysAgo.setDate(fiveDaysAgo.getDate() - 5);
       const fiveDaysAgoStr = getEasternDateStr(fiveDaysAgo);
@@ -96,17 +97,19 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
         .gte('session_date', fiveDaysAgoStr);
 
       const recentMealIds = new Set((history || []).map((h) => h.meal_id));
-      const yesterdayEntry = (history || []).find((h) => h.session_date === yesterdayStr);
-      const yesterdayMeal = yesterdayEntry?.meals || null;
+      
+      // Grab all meals locked in yesterday to prevent cluster fatigue across split dinners
+      const yesterdayEntries = (history || []).filter((h) => h.session_date === yesterdayStr);
+      const yesterdayMeals = yesterdayEntries.map((h) => h.meals).filter(Boolean);
 
-      // 2. Fetch 14-day history for Adaptive Learning (Rejection Penalty & Win-Rate Boost)
+      // 2. Fetch 14-day history for Adaptive Learning
       const fourteenDaysAgo = new Date();
       fourteenDaysAgo.setDate(fourteenDaysAgo.getDate() - 14);
       const fourteenDaysAgoStr = getEasternDateStr(fourteenDaysAgo);
 
       const { data: pastSessions } = await supabase
         .from('dinner_sessions')
-        .select('candidate_meal_ids, final_meal_id')
+        .select('candidate_meal_ids, final_meal_ids, final_meal_id')
         .gte('session_date', fourteenDaysAgoStr)
         .neq('session_date', todayStr);
 
@@ -119,36 +122,42 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       const performanceStats = {};
 
       (pastSessions || []).forEach((s) => {
+        const winningList = s.final_meal_ids?.length ? s.final_meal_ids : (s.final_meal_id ? [s.final_meal_id] : []);
         (s.candidate_meal_ids || []).forEach((id) => {
           if (!performanceStats[id]) {
             performanceStats[id] = { appearances: 0, upvotes: 0, wins: 0 };
           }
           performanceStats[id].appearances += 1;
-          if (s.final_meal_id === id) {
+          if (winningList.includes(id)) {
             performanceStats[id].wins += 1;
           }
         });
       });
 
       (pastVotes || []).forEach((v) => {
-        if (v.vote_type === 'up' && performanceStats[v.meal_id]) {
+        if (v.vote_type === 'upvote' && performanceStats[v.meal_id]) {
           performanceStats[v.meal_id].upvotes += 1;
         }
       });
 
-      // 3. Rank candidates if session is not yet generated for today
+      // 3. Rank candidates if session is not yet generated
       if (!currentSession && allMeals?.length > 0) {
         const top3Ids = rankCandidateMeals({
           allMeals,
           recentMealIds,
-          yesterdayMeal,
+          yesterdayMeals,
           specialEvent: event,
           performanceStats,
         });
 
         const { data: newSession } = await supabase
           .from('dinner_sessions')
-          .insert({ session_date: todayStr, candidate_meal_ids: top3Ids, status: 'voting_open' })
+          .insert({
+            session_date: todayStr,
+            candidate_meal_ids: top3Ids,
+            final_meal_ids: [],
+            status: 'voting_open',
+          })
           .select()
           .single();
 
@@ -158,7 +167,8 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       setSession(currentSession);
 
       if (currentSession) {
-        const ids = [...currentSession.candidate_meal_ids, currentSession.final_meal_id].filter(Boolean);
+        const currentWinners = currentSession.final_meal_ids || (currentSession.final_meal_id ? [currentSession.final_meal_id] : []);
+        const ids = [...(currentSession.candidate_meal_ids || []), ...currentWinners].filter(Boolean);
         setCandidates((allMeals || []).filter((m) => ids.includes(m.id)));
       }
 
@@ -185,18 +195,50 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
     await fetchVotes();
   }
 
-  async function handleLockIn(mealId) {
+  // Multi-lock: Adds or removes a meal from tonight's locked list
+  async function handleToggleLockIn(mealId) {
+    if (!isAmma) return;
+    const currentList = session?.final_meal_ids || (session?.final_meal_id ? [session.final_meal_id] : []);
+    const isAlreadyChosen = currentList.includes(mealId);
+
+    const updatedList = isAlreadyChosen
+      ? currentList.filter((id) => id !== mealId)
+      : [...currentList, mealId];
+
+    const nextStatus = updatedList.length > 0 ? 'locked_in' : 'voting_open';
+
     const { error } = await supabase
       .from('dinner_sessions')
-      .update({ status: 'locked_in', final_meal_id: mealId, locked_at: new Date().toISOString() })
+      .update({
+        status: nextStatus,
+        final_meal_ids: updatedList,
+        final_meal_id: updatedList[0] || null, // backward compatibility
+        locked_at: updatedList.length > 0 ? new Date().toISOString() : null,
+      })
       .eq('session_date', todayStr);
 
     if (!error) {
-      await supabase
-        .from('dinner_history')
-        .upsert({ session_date: todayStr, meal_id: mealId, locked_by: userProfile.id }, { onConflict: 'session_date' });
-      await supabase.from('meals').update({ status: 'approved' }).eq('id', mealId);
-      setSession((prev) => ({ ...prev, status: 'locked_in', final_meal_id: mealId }));
+      if (isAlreadyChosen) {
+        await supabase
+          .from('dinner_history')
+          .delete()
+          .match({ session_date: todayStr, meal_id: mealId });
+      } else {
+        await supabase
+          .from('dinner_history')
+          .upsert(
+            { session_date: todayStr, meal_id: mealId, locked_by: userProfile.id },
+            { onConflict: 'session_date,meal_id' }
+          );
+        await supabase.from('meals').update({ status: 'approved' }).eq('id', mealId);
+      }
+
+      setSession((prev) => ({
+        ...prev,
+        status: nextStatus,
+        final_meal_ids: updatedList,
+        final_meal_id: updatedList[0] || null,
+      }));
     }
   }
 
@@ -217,25 +259,36 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
       }
     }
     setCandidates((prev) => (prev.some((m) => m.id === target.id) ? prev : [...prev, target]));
-    await handleLockIn(target.id);
+    await handleToggleLockIn(target.id);
   }
 
-  async function handleUnlock() {
-    await supabase.from('dinner_sessions').update({ status: 'voting_open', final_meal_id: null }).eq('session_date', todayStr);
+  async function handleUnlockAll() {
+    await supabase.from('dinner_sessions').update({ status: 'voting_open', final_meal_ids: [], final_meal_id: null }).eq('session_date', todayStr);
     await supabase.from('dinner_history').delete().eq('session_date', todayStr);
-    setSession((prev) => ({ ...prev, status: 'voting_open', final_meal_id: null }));
+    setSession((prev) => ({ ...prev, status: 'voting_open', final_meal_ids: [], final_meal_id: null }));
   }
 
   if (loading) return <p style={{ color: '#64748b' }}>Calculating tonight's options...</p>;
 
-  const winningMeal = [...candidates, ...suggestedMeals].find((m) => m.id === session?.final_meal_id);
+  const combinedCatalog = [...candidates, ...suggestedMeals, ...allApprovedMeals];
+  const winningMeals = lockedMealIds
+    .map((id) => combinedCatalog.find((m) => m.id === id))
+    .filter(Boolean);
 
   return (
     <div className="session-card">
       {isLocked ? (
         <div className="banner-locked">
-          <h3>✅ Tonight's Dinner is Locked In!</h3>
-          <p>Amma has chosen <strong>{winningMeal?.name}</strong>.</p>
+          <h3>✅ Tonight's Dinner Plan is Locked In!</h3>
+          <p>
+            Amma has selected:{' '}
+            <strong>{winningMeals.map((m) => m.name).join(' + ')}</strong>
+          </p>
+          {isAmma && (
+            <p style={{ fontSize: '12px', marginTop: '4px', opacity: 0.9 }}>
+              (You can still lock in additional dishes below or click to remove)
+            </p>
+          )}
         </div>
       ) : (
         <div style={{ textAlign: 'center', marginBottom: '16px' }}>
@@ -266,13 +319,13 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
           <ForecastMealCard
             key={meal.id}
             meal={meal}
-            isWinning={session?.final_meal_id === meal.id}
+            isWinning={lockedMealIds.includes(meal.id)}
             isLocked={isLocked}
             isAmma={isAmma}
             votes={votes}
             currentUserId={userProfile?.id}
             onVote={handleVote}
-            onLockIn={handleLockIn}
+            onLockIn={handleToggleLockIn}
           />
         ))}
       </div>
@@ -293,7 +346,7 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
                 fontWeight: '700',
               }}
             >
-              {isLocked ? 'Voting Closed' : 'Active for Voting'}
+              {isLocked ? 'Selections Made' : 'Active for Voting'}
             </span>
           </div>
 
@@ -303,27 +356,29 @@ export default function ForecastCard({ userProfile, onCatalogUpdate, newSuggesti
                 key={meal.id}
                 meal={meal}
                 isSuggested
-                isWinning={session?.final_meal_id === meal.id}
+                isWinning={lockedMealIds.includes(meal.id)}
                 isLocked={isLocked}
                 isAmma={isAmma}
                 votes={votes}
                 currentUserId={userProfile?.id}
                 onVote={handleVote}
-                onLockIn={handleLockIn}
+                onLockIn={handleToggleLockIn}
               />
             ))}
           </div>
         </div>
       )}
 
-      {isAmma && !isLocked && (
+      {isAmma && (
         <CustomMealOverride allApprovedMeals={allApprovedMeals} onLockInCustom={handleCustomLockIn} />
       )}
 
       {isAmma && isLocked && (
-        <button className="unlock-btn" onClick={handleUnlock}>
-          🔓 Change Choice / Reopen Voting
-        </button>
+        <div style={{ marginTop: '16px', textAlign: 'center' }}>
+          <button className="unlock-btn" onClick={handleUnlockAll}>
+            🔓 Clear All Selections / Reopen Voting
+          </button>
+        </div>
       )}
     </div>
   );

@@ -40,35 +40,49 @@ export default function ForecastMealCard({
         ))}
       </div>
 
-      {!isLocked && (
-        <div className="actions-row">
-          <button
-            type="button"
-            className={`vote-btn ${userVote?.vote_type === 'upvote' ? 'active-up' : ''}`}
-            onClick={() => onVote(meal.id, 'upvote')}
-          >
-            👍 {upvoters.length}
-          </button>
-          <button
-            type="button"
-            className={`vote-btn ${userVote?.vote_type === 'downvote' ? 'active-down' : ''}`}
-            onClick={() => onVote(meal.id, 'downvote')}
-          >
-            👎 {downvoters.length}
-          </button>
-
-          {isAmma && (
+      <div className="actions-row" style={{ marginTop: '10px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+        {/* Voting buttons are hidden once dinner is locked */}
+        {!isLocked && (
+          <>
             <button
               type="button"
-              className="lockin-btn"
-              style={{ flex: 1.5 }}
-              onClick={() => onLockIn(meal.id)}
+              className={`vote-btn ${userVote?.vote_type === 'upvote' ? 'active-up' : ''}`}
+              onClick={() => onVote(meal.id, 'upvote')}
             >
-              Lock In 🔒
+              👍 {upvoters.length}
             </button>
-          )}
-        </div>
-      )}
+            <button
+              type="button"
+              className={`vote-btn ${userVote?.vote_type === 'downvote' ? 'active-down' : ''}`}
+              onClick={() => onVote(meal.id, 'downvote')}
+            >
+              👎 {downvoters.length}
+            </button>
+          </>
+        )}
+
+        {/* Amma can toggle lock-in at any time */}
+        {isAmma && (
+          <button
+            type="button"
+            onClick={() => onLockIn(meal.id)}
+            style={{
+              flex: 1.5,
+              padding: '8px 12px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: '700',
+              cursor: 'pointer',
+              border: 'none',
+              transition: 'all 0.15s ease-in-out',
+              background: isWinning ? '#fee2e2' : '#2563eb',
+              color: isWinning ? '#991b1b' : '#ffffff',
+            }}
+          >
+            {isWinning ? '❌ Remove from Tonight' : '🔒 Lock In for Tonight'}
+          </button>
+        )}
+      </div>
 
       {(upvoters.length > 0 || downvoters.length > 0) && (
         <div className="voters-breakdown">

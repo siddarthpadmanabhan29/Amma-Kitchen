@@ -49,16 +49,28 @@ function getMealCluster(mealName = '') {
 
 /**
  * Core candidate scoring algorithm with Adaptive Learning (Rejection + Win-Rate)
+ * and Multi-Meal Cluster Fatigue support.
  */
 export function rankCandidateMeals({
   allMeals = [],
   recentMealIds = new Set(),
-  yesterdayMeal = null,
+  yesterdayMeals = [],
+  yesterdayMeal = null, // fallback support for backward compatibility
   specialEvent = null,
   performanceStats = {}, // { [mealId]: { appearances: number, upvotes: number, wins: number } }
 }) {
   const { hour: currentHour, day: currentDay } = getEasternTimeDetails();
-  const yesterdayCluster = yesterdayMeal ? getMealCluster(yesterdayMeal.name) : null;
+
+  // Normalize yesterday's meals to a list and collect all clusters
+  const priorMeals = yesterdayMeals.length > 0
+    ? yesterdayMeals
+    : (yesterdayMeal ? [yesterdayMeal] : []);
+
+  const yesterdayClusters = new Set(
+    priorMeals
+      .map((m) => getMealCluster(m?.name))
+      .filter(Boolean)
+  );
 
   const scored = allMeals.map((m) => {
     // 1. Base score + Entropy Jitter (+/- 2.5 pts to naturally break ties)
@@ -70,10 +82,10 @@ export function rankCandidateMeals({
       score -= 60;
     }
 
-    // 3. Sibling / Category Cluster Fatigue Penalty (-25 pts if same style as yesterday)
-    if (yesterdayCluster) {
+    // 3. Category / Cluster Fatigue Penalty (-25 pts if matching any cluster eaten yesterday)
+    if (yesterdayClusters.size > 0) {
       const thisCluster = getMealCluster(m.name);
-      if (thisCluster && thisCluster === yesterdayCluster) {
+      if (thisCluster && yesterdayClusters.has(thisCluster)) {
         score -= 25;
       }
     }
